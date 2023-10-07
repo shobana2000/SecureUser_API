@@ -119,12 +119,12 @@ def create_app():
                 body = data.get('body')
 
                 token = request.headers.get('Authorization')
-                print("Received Token:", token)
+                # print("Received Token:", token)
                 # Remove the "Bearer " prefix from the token if present
                 token = token.replace("Bearer ", "")
 
                 user = db.users.find_one({'token': token})
-                print("User from Database:", user)
+                # print("User from Database:", user)
 
                 if not user:
                     return jsonify({'message': 'User not found'}), 401
