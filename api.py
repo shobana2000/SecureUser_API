@@ -3,11 +3,15 @@ from decouple import config
 import bcrypt
 from oauthlib.common import generate_token
 from pymongo import MongoClient
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 app = Flask(__name__)
 
-MONGO_URI = config('MONGO_URI')
-SECRET_KEY = config('SECRET_KEY')
+MONGO_URI = str(os.getenv('MONGO_URI'))
+SECRET_KEY = str(os.getenv('SECRET_KEY'))
 
 client = MongoClient(MONGO_URI)
 db = client['mydatabase']
