@@ -7,14 +7,12 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()
-
 def create_app():
 
     app = Flask(__name__)
 
     MONGO_URI = str(os.getenv('MONGO_URI'))
     SECRET_KEY = str(os.getenv('SECRET_KEY'))
-
 
     client = MongoClient(MONGO_URI)
     db = client['mydatabase']
@@ -29,14 +27,18 @@ def create_app():
         new_id = f'USER-{str(last_id + 1).zfill(4)}'  # e.g., "USER-0001"
         return new_id
 
-    def generate_template_id():
-        last_template = db.templates.find_one(sort=[('template_id', -1)])
-        if last_template:
-            last_id = int(last_template['template_id'])
+    def generate_template_id(user_id):
+        highest_template = db.templates.find_one(
+            {'user_id': user_id},
+            sort=[('template_id', -1)]
+        )
+
+        if highest_template:
+            next_template_id = highest_template['template_id'] + 1
         else:
-            last_id = 0
-        new_id = last_id + 1
-        return new_id
+            next_template_id = 1  # Start with 1 if the user has no templates
+
+        return next_template_id
 
     @app.route('/register', methods=['POST'])
     def register():
@@ -53,11 +55,16 @@ def create_app():
 
             if existing_user:
                 # If the user already exists, redirect to the login page
+                return jsonify({'message': 'User already exists, Please go login page'}), 400
                 return redirect(url_for('login'))
 
             # Hash the password before storing it
             hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
             custom_user_id = generate_custom_user_id()
+
+            # Generate and store a token for the user
+            token = generate_token()
+
             # Create a new user document
             user_data = {
                 '_id': custom_user_id,
@@ -65,6 +72,7 @@ def create_app():
                 'last_name': last_name,
                 'email': email,
                 'password': hashed_password.decode('utf-8'),  # Store the hashed password as a string
+                'token': token  # Store the user's token
             }
 
             # Insert the user document into the database
@@ -80,22 +88,20 @@ def create_app():
     def login():
         try:
             data = request.get_json()
-            # print(data)
+            
             email = data.get('email')
             password = data.get('password')
 
             # Find the user with the provided email
             user = db.users.find_one({'email': email})
-
+           
             if not user:
                 return jsonify({'message': 'User not found!'}), 401
 
             # Check the password using bcrypt.checkpw
             if bcrypt.checkpw(password.encode('utf-8'), user['password'].encode('utf-8')):
-                token=generate_token()
-                return jsonify({'message': 'Login successful'}), 200
-                # return redirect('/template'+token), 200
-                return redirect(url_for('insert_template',token=token)), 200
+                return jsonify({'message': 'Login successful', 'token': user['token']}), 200
+                # return redirect(url_for('insert_template', token=token)), 200
             else:
                 return jsonify({'message': 'Invalid password'}), 401
 
@@ -112,18 +118,29 @@ def create_app():
                 subject = data.get('subject')
                 body = data.get('body')
 
-                custom_user_id = generate_template_id()
+                token = request.headers.get('Authorization')
+                print("Received Token:", token)
+                # Remove the "Bearer " prefix from the token if present
+                token = token.replace("Bearer ", "")
+
+                user = db.users.find_one({'token': token})
+                print("User from Database:", user)
+
+                if not user:
+                    return jsonify({'message': 'User not found'}), 401
+
+
+                next_template_id = generate_template_id(user['_id'])
 
                 template_data = {
-                    'template_id': custom_user_id,
+                    'template_id': next_template_id,
                     'template_name': template_name,
                     'subject': subject,
                     'body': body,
-                    # 'user_email': user_email  # Associate the template with the user who created it
+                    'user_id': user['_id']  # Associate the template with the user who created it
                 }
 
                 # Insert the template document into the database
-                # db.templates.insert_one(template_data)
                 db.templates.insert_one(template_data)
 
                 return jsonify({'message': 'Template inserted successfully'}), 201
@@ -133,7 +150,15 @@ def create_app():
 
         elif request.method == 'GET':
             try:
-                templates = list(db.templates.find({}, {"_id": 0}))
+                # Retrieve the user's identity from the token
+                token = request.headers.get('Authorization')
+                token = token.replace("Bearer ", "")
+                user = db.users.find_one({'token': token})
+
+                if not user:
+                    return jsonify({'message': 'User not found'}), 401
+
+                templates = list(db.templates.find({'user_id': user['_id']}, {"_id": 0}))
 
                 return jsonify({'templates': templates}), 200
 
@@ -146,18 +171,36 @@ def create_app():
     def single_template(template_id):
         if request.method == 'GET':
             try:
-                # Convert the template_id string to ObjectId
-                templates = list(db.templates.find({"template_id": template_id}, {"_id": 0}))
+                # Retrieve the user's identity from the token
+                token = request.headers.get('Authorization')
+                token = token.replace("Bearer ", "")
+                user = db.users.find_one({'token': token})
 
-                # template = db.templates.find_one({'_id': template_id_object})
+                if not user:
+                    return jsonify({'message': 'User not found'}), 401
 
-                return jsonify({'templates': templates}), 200
+                # Fetch the template associated with the user
+                template = db.templates.find_one({'template_id': template_id, 'user_id': user['_id']}, {"_id": 0})
+
+                if not template:
+                    return jsonify({'message': 'Template not found'}), 404
+
+                return jsonify({'templates': template}), 200
             except Exception as e:
                 print(f"Error: {e}")
                 return jsonify({'message': 'An error occurred'}), 500
         elif request.method == 'PUT':
             try:
-                if not db.templates.find_one({"template_id": template_id}, {"_id": 0}):
+               
+                token = request.headers.get('Authorization')
+                token = token.replace("Bearer ", "")
+                user = db.users.find_one({'token': token})
+
+                if not user:
+                    return jsonify({'message': 'User not found'}), 401
+
+                # Check if the template exists and belongs to the user
+                if not db.templates.find_one({"template_id": template_id, 'user_id': user['_id']}, {"_id": 0}):
                     return jsonify({'message': 'Template not found'}), 404
 
                 # Get the updated data from the request body
@@ -168,7 +211,7 @@ def create_app():
 
                 # Update the template in the database
                 db.templates.update_one(
-                    {"template_id": template_id},
+                    {"template_id": template_id, 'user_id': user['_id']},
                     {
                         '$set': {
                             'template_name': updated_template_name,
@@ -186,16 +229,27 @@ def create_app():
 
         elif request.method == 'DELETE':
             try:
+               
+                token = request.headers.get('Authorization')
+                token = token.replace("Bearer ", "")
+                user = db.users.find_one({'token': token})
+
+                if not user:
+                    return jsonify({'message': 'User not found'}), 401
+
+                # Check if the template exists and belongs to the user
+                if not db.templates.find_one({"template_id": template_id, 'user_id': user['_id']}, {"_id": 0}):
+                    return jsonify({'message': 'Template not found'}), 404
+
                 # Delete the template from the database
-                db.templates.delete_one({"template_id": template_id})
+                db.templates.delete_one({"template_id": template_id, 'user_id': user['_id']})
 
                 return jsonify({'message': 'Template deleted successfully'}), 200
 
             except Exception as e:
                 print(f"Error: {e}")
                 return jsonify({'message': 'An error occurred'}), 500
-    
-    # Your Flask app configuration and routes here
+
     return app
 if __name__ == '__main__':
     app = create_app()
