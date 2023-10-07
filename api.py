@@ -1,5 +1,4 @@
 from flask import Flask, request, jsonify, redirect, url_for
-from decouple import config
 import bcrypt
 from oauthlib.common import generate_token
 from pymongo import MongoClient
